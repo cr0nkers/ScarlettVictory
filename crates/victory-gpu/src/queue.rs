@@ -58,6 +58,9 @@ enum Held {
 /// The queues that hold something (their addresses).
 #[cfg(windows)]
 static WAITING: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+/// Keeps queue addresses in `WAITING` alive while `release_held` uses them.
+#[cfg(windows)]
+static RELEASING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(windows)]
 fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -308,11 +311,10 @@ fn hold(this: This, what: impl FnOnce() -> Held) -> bool {
 #[cfg(windows)]
 pub(crate) fn release_held(all: bool) {
     // One caller at a time, so a queue's submissions keep their order.
-    static RELEASING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = lock(&RELEASING);
     if lock(&WAITING).is_empty() {
         return;
     }
-    let _one = lock(&RELEASING);
     loop {
         let queues = lock(&WAITING).clone();
         let mut moved = false;
@@ -503,6 +505,10 @@ extern "system" fn query(this: This, iid: *const Iid, out: *mut This) -> HRESULT
     )
 }
 extern "system" fn release(this: This) -> u32 {
+    // Drainers hold raw addresses copied from WAITING. Keep the object alive
+    // until any active drain finishes, then remove it before freeing it.
+    #[cfg(windows)]
+    let _one = lock(&RELEASING);
     let left = object::release_boxed::<Queue>(this);
     #[cfg(windows)]
     if left == 0 {
