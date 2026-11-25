@@ -194,14 +194,17 @@ fn current(dir: &Path) -> std::io::Result<Option<Version>> {
     let Some(&number) = committed.last() else {
         return Ok(None);
     };
-    for old in &committed[..committed.len() - 1] {
-        std::fs::remove_dir_all(dir.join(format!("v{old}")))?;
-    }
     let version = dir.join(format!("v{number}"));
     let bad = || std::io::Error::new(std::io::ErrorKind::InvalidData, "bad save manifest");
     let mut names = parse_manifest(&std::fs::read(version.join(MANIFEST))?).ok_or_else(bad)?;
     let blobs = names.split_off(2);
     let [name, display] = <[String; 2]>::try_from(names).map_err(|_| bad())?;
+    // Keep the previous committed versions until the newest one's manifest
+    // is known to be readable; otherwise a damaged newest version destroys
+    // the only recoverable save before returning its error.
+    for old in &committed[..committed.len() - 1] {
+        std::fs::remove_dir_all(dir.join(format!("v{old}")))?;
+    }
     Ok(Some(Version {
         dir: version,
         number,
