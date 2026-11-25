@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use victory_hle::{HleResolver, HostPolicy};
 use victory_loader::Provenance;
 use victory_pe::{ImageInfo, ImportSymbol};
@@ -32,10 +32,8 @@ pub fn run(paths: Vec<PathBuf>, strict: bool, list_missing: bool) -> Result<()> 
     let mut missing: BTreeMap<(String, String), BTreeSet<PathBuf>> = BTreeMap::new();
 
     for root in &paths {
-        for entry in walkdir::WalkDir::new(root)
-            .into_iter()
-            .filter_map(Result::ok)
-        {
+        for entry in walkdir::WalkDir::new(root) {
+            let entry = entry.with_context(|| format!("walking {}", root.display()))?;
             let path = entry.path();
             if !entry.file_type().is_file() || !looks_like_pe(path) {
                 continue;

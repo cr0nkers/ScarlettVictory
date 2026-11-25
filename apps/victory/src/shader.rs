@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use victory_game::sgd5;
 use victory_shader::gfx10::{self, Instruction};
 use victory_shader::{Container, DxilProgram, FourCC, HwStage, ShaderError, native_programs};
@@ -75,10 +75,8 @@ pub fn run(paths: Vec<PathBuf>, verbose: bool, disasm: bool) -> Result<()> {
     let paths = crate::default_paths(paths)?;
     let mut t = Totals::default();
     for root in &paths {
-        for entry in walkdir::WalkDir::new(root)
-            .into_iter()
-            .filter_map(Result::ok)
-        {
+        for entry in walkdir::WalkDir::new(root) {
+            let entry = entry.with_context(|| format!("walking {}", root.display()))?;
             if !entry.file_type().is_file() {
                 continue;
             }
