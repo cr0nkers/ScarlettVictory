@@ -10,6 +10,7 @@
 # Build output
 /target/
 /tests/fixtures/*/target/
+/.local-perf/
 
 # Local configuration (contains paths to YOUR files)
 /victory.toml

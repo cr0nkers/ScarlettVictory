@@ -6557,14 +6557,14 @@ impl Meter {
             let total_ms: f64 = self.intervals_ms.iter().sum();
             let p90 = self.intervals_ms[(count * 9).div_ceil(10) - 1];
             let worst = self.intervals_ms[count - 1];
-            let slow = self.intervals_ms.iter().filter(|&&ms| ms > 200.0).count();
+            let slow_frames = self.intervals_ms.iter().filter(|&&ms| ms > 200.0).count();
             tracing::info!(
                 frames = count,
                 window_ms = total_ms,
                 fps = count as f64 * 1000.0 / total_ms,
                 p90_ms = p90,
                 worst_ms = worst,
-                frames_over_200_ms = slow,
+                frames_over_200_ms = slow_frames,
                 "presentation pacing over complete window"
             );
             self.intervals_ms.clear();
