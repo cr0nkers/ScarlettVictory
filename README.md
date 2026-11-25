@@ -1,10 +1,21 @@
-# VIctory fork (work in progress)
+# ScatlettVIctory (work in progress)
 
-A work-in-progress fork of [VIctory](https://github.com/Marvisak/VIctory), a
-compatibility layer that runs an Xbox Series title natively on Windows from
-files the user supplies. This fork follows upstream
-`main` and adds fixes aimed at one goal: getting the game's world to render
-correctly and playably on one particular PC.
+[ScatlettVIctory](https://github.com/cr0nkers/ScatlettVIctory) is a
+work-in-progress fork of
+[fxceless/victory-fork](https://github.com/fxceless/victory-fork), built on
+[VIctory](https://github.com/Marvisak/VIctory), a compatibility layer that runs
+an Xbox Series title natively on Windows from files the user supplies.
+The goal is to get the game's world rendering correctly and playably.
+
+Clone this repository:
+
+```powershell
+git clone https://github.com/cr0nkers/ScatlettVIctory.git
+cd ScatlettVIctory
+```
+
+The executable and Cargo package are named `victory`. Configuration uses
+`victory.toml` and the `VICTORY_*` environment variables shown below.
 
 **This repository contains no game files, code or assets.** You need your own
 copy of the game. It is not affiliated with or endorsed by the game's
@@ -15,12 +26,13 @@ developer or publisher.
 - **[VIctory](https://github.com/Marvisak/VIctory)** by Marvisak and its
   contributors is the base of everything here: the loader, the runtime
   services, the Direct3D 12 back end and the shader recompiler. Licensed
-  GPL-3.0-or-later; so is this fork. Upstream's history is kept intact below
-  the single commit that carries this fork's changes.
+  GPL-3.0-or-later; so is ScatlettVIctory. Upstream's history is preserved.
+- **[fxceless/victory-fork](https://github.com/fxceless/victory-fork)** is the
+  source fork for ScatlettVIctory's inherited rendering and performance work.
 - **[XCL](https://github.com/ivall/xcl)** by ivall and its contributors
   (GPL-2.0-only) was used as a reference for how the same title behaves under
   another layer. Fixes inspired by it were written anew in VIctory's code.
-- This fork's changes were developed with [Claude Code](https://claude.com/claude-code).
+- The source fork's changes were developed with [Claude Code](https://claude.com/claude-code).
 
 ## Status of this fork (2026-11-25)
 
