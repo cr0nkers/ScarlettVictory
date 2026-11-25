@@ -427,6 +427,30 @@ mod tests {
         assert!(cached(&cache, &build, b"other", fail).is_err());
     }
 
+    #[test]
+    fn successful_translation_survives_cache_io_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path().join("cache");
+        let cache = Cache::open(&cache_dir).unwrap();
+        std::fs::remove_dir(&cache_dir).unwrap();
+        std::fs::write(&cache_dir, b"cache directory replaced by a file").unwrap();
+
+        let runs = AtomicU64::new(0);
+        let translate = |_: &[u8]| {
+            runs.fetch_add(1, Ordering::Relaxed);
+            Ok(shader())
+        };
+        assert_eq!(
+            cached(&cache, &[7; 32], b"container", translate),
+            Ok(shader())
+        );
+        assert_eq!(
+            runs.load(Ordering::Relaxed),
+            1,
+            "the result is not translated twice"
+        );
+    }
+
     fn walk(dir: &std::path::Path) -> Vec<PathBuf> {
         let mut files = Vec::new();
         for e in std::fs::read_dir(dir).unwrap().flatten() {
