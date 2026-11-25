@@ -271,9 +271,10 @@ fn commit(
 
 /// The containers under a provider's root, by exact name; containers in
 /// the old one-file-per-blob layout are converted first.
-fn containers(root: &Path) -> Vec<(String, PathBuf)> {
+fn containers(root: &Path) -> std::io::Result<Vec<(String, PathBuf)>> {
     let mut out = Vec::new();
-    for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
         let path = entry.path();
         let file = entry.file_name().to_string_lossy().into_owned();
         if !path.is_dir() {
@@ -282,52 +283,57 @@ fn containers(root: &Path) -> Vec<(String, PathBuf)> {
         if file.ends_with(".gone") {
             let _ = std::fs::remove_dir_all(&path);
         } else if file.contains('~') {
-            if let Ok(Some(v)) = current(&path) {
+            if let Some(v) = current(&path)? {
                 out.push((v.name, path));
             }
-        } else if let Some(name) = decode(&file)
-            && let Some(dir) = migrate(root, &name, &path)
-        {
+        } else if let Some(name) = decode(&file) {
+            let dir = migrate(root, &name, &path)?;
             out.push((name, dir));
         }
     }
     out.sort();
-    out
+    Ok(out)
 }
 
 /// Moves a container of the old layout (blob files named by encoded name,
-/// a `.display` file) into a committed version, then removes it.
-fn migrate(root: &Path, name: &str, old: &Path) -> Option<PathBuf> {
+/// a `.display` file) into a committed version, then removes it. Every
+/// blob must be read before committing, so a read failure leaves the source intact.
+fn migrate(root: &Path, name: &str, old: &Path) -> std::io::Result<PathBuf> {
     let dir = container_dir(root, name);
-    let done = current_named(&dir, name).ok()?.is_some(); // a crash after the commit
+    let done = current_named(&dir, name)?.is_some(); // a crash after the commit
     if !done {
-        let display = std::fs::read_to_string(old.join(".display")).unwrap_or_default();
-        let mut blobs: Vec<(String, Vec<u8>)> = std::fs::read_dir(old)
-            .ok()?
-            .flatten()
-            .filter_map(|e| {
-                let blob = decode(e.file_name().to_str()?)?;
-                Some((blob, std::fs::read(e.path()).ok()?))
-            })
-            .collect();
+        let display = match std::fs::read_to_string(old.join(".display")) {
+            Ok(display) => display,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(e),
+        };
+        let mut blobs = Vec::new();
+        for entry in std::fs::read_dir(old)? {
+            let entry = entry?;
+            let file = entry.file_name();
+            let Some(blob) = file.to_str().and_then(decode) else {
+                continue;
+            };
+            blobs.push((blob, std::fs::read(entry.path())?));
+        }
         blobs.sort();
         let sources: Vec<_> = blobs
             .iter()
             .map(|(n, d)| (n.as_str(), Source::Data(d)))
             .collect();
-        commit(&dir, 1, name, &display, &sources).ok()?;
+        commit(&dir, 1, name, &display, &sources)?;
     }
-    std::fs::remove_dir_all(old).ok()?;
+    std::fs::remove_dir_all(old)?;
     tracing::info!(container = name, "game save moved to the versioned layout");
-    Some(dir)
+    Ok(dir)
 }
 
-fn used_bytes(root: &Path) -> u64 {
-    containers(root)
+fn used_bytes(root: &Path) -> std::io::Result<u64> {
+    Ok(containers(root)?
         .iter()
         .filter_map(|(name, dir)| current_named(dir, name).ok().flatten())
         .map(|v| v.sizes().iter().map(|(_, size)| size).sum::<u64>())
-        .sum()
+        .sum())
 }
 
 struct Provider {
@@ -372,11 +378,13 @@ impl Provider {
             .join(file_name(config));
         std::fs::create_dir_all(&root).map_err(|_| NO_ACCESS)?;
         let _saves = saves_lock();
-        containers(&root); // converts old containers now
+        // Migrate before exposing a provider: an unreadable save must not
+        // appear to the title as a missing container it can overwrite.
+        containers(&root).map_err(|e| io_error(&root, &e))?;
         Ok(Provider { root })
     }
 
-    fn remaining(&self) -> u64 {
+    fn remaining(&self) -> Result<u64, HRESULT> {
         let _saves = saves_lock();
         remaining(&self.root)
     }
@@ -390,10 +398,9 @@ impl Provider {
 }
 
 /// Quota left under a provider's root, or less if the host disk is fuller.
-fn remaining(root: &Path) -> u64 {
-    QUOTA
-        .saturating_sub(used_bytes(root))
-        .min(storage::disk_free(root))
+fn remaining(root: &Path) -> Result<u64, HRESULT> {
+    let used = used_bytes(root).map_err(|e| io_error(root, &e))?;
+    Ok(QUOTA.saturating_sub(used).min(storage::disk_free(root)))
 }
 
 /// Why an update writing `written` bytes, `replaced` of them over blobs it
@@ -465,7 +472,11 @@ impl Update {
         });
         let root = self.dir.parent().unwrap_or(&self.dir);
         let free = storage::disk_free(root);
-        if let Some(hr) = no_room(written as u64, replaced, used_bytes(root), free) {
+        let used = match used_bytes(root) {
+            Ok(used) => used,
+            Err(e) => return io_error(root, &e),
+        };
+        if let Some(hr) = no_room(written as u64, replaced, used, free) {
             return hr;
         }
         let display = self.display.as_deref();
@@ -573,10 +584,19 @@ pub struct BlobInfo {
 
 /// Calls `callback` with the information of each container that passes
 /// `keep` until it returns false; never under our lock (it may call us).
-fn report(root: &Path, keep: impl Fn(&str) -> bool, context: *mut c_void, callback: ContainerCallback) {
+fn report(
+    root: &Path,
+    keep: impl Fn(&str) -> bool,
+    context: *mut c_void,
+    callback: ContainerCallback,
+) -> HRESULT {
     let infos: Vec<(CString, CString, u32, u64, i64)> = {
         let _saves = saves_lock();
-        containers(root)
+        let containers = match containers(root) {
+            Ok(containers) => containers,
+            Err(e) => return io_error(root, &e),
+        };
+        containers
             .into_iter()
             .filter(|(name, _)| keep(name))
             .filter_map(|(name, dir)| current_named(&dir, &name).ok().flatten())
@@ -605,6 +625,7 @@ fn report(root: &Path, keep: impl Fn(&str) -> bool, context: *mut c_void, callba
             break;
         }
     }
+    S_OK
 }
 
 fn cstring(s: &str) -> CString {
@@ -650,7 +671,8 @@ extern "system" fn quota_async(
 ) -> HRESULT {
     let result = get(provider)
         .ok_or(E_INVALIDARG)
-        .map(|p| xasync::bytes(p.remaining() as i64));
+        .and_then(|p| p.remaining())
+        .map(|remaining| xasync::bytes(remaining as i64));
     xasync::finished_with(block, (&raw const QUOTA_CALL).cast(), result)
 }
 extern "system" fn quota_result(_: This, block: *mut AsyncBlock, out: *mut i64) -> HRESULT {
@@ -690,8 +712,7 @@ extern "system" fn container_info(
     if !valid_container(&name) {
         return INVALID_CONTAINER_NAME;
     }
-    report(&p.root, |n| n == name, context, callback);
-    S_OK
+    report(&p.root, |n| n == name, context, callback)
 }
 
 extern "system" fn enumerate_containers(
@@ -703,8 +724,7 @@ extern "system" fn enumerate_containers(
     let (Some(p), Some(callback)) = (get(provider), callback) else {
         return E_INVALIDARG;
     };
-    report(&p.root, |_| true, context, callback);
-    S_OK
+    report(&p.root, |_| true, context, callback)
 }
 
 /// The container exists once an update to it is submitted.
@@ -1104,7 +1124,7 @@ mod tests {
             assert_eq!(u.submit(), S_OK, "{container}");
         }
         let _saves = saves_lock();
-        let names: Vec<String> = containers(dir.path()).into_iter().map(|c| c.0).collect();
+        let names: Vec<String> = containers(dir.path()).unwrap().into_iter().map(|c| c.0).collect();
         drop(_saves);
         assert_eq!(names, ["SAVE/CON.x", "Save", "save"]);
         for container in ["Save", "save", "SAVE/CON.x"] {
@@ -1141,6 +1161,72 @@ mod tests {
         );
         let v = current_named(&c.dir, "Player").unwrap().unwrap();
         assert_eq!((v.number, v.display.as_str()), (1, "Chapter 1"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn migration_preserves_unreadable_files_and_can_be_retried() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        for locked_name in ["Save%20Game%20Data", ".display"] {
+            let saves = tempfile::tempdir().unwrap();
+            let root = saves.path().join(format!("{:016X}", xuser::XUID)).join("scid");
+            let old = root.join("Player");
+            std::fs::create_dir_all(&old).unwrap();
+            std::fs::write(old.join("Save%20Game%20Data"), b"data").unwrap();
+            std::fs::write(old.join("Save%20Game%20Header"), b"header").unwrap();
+            std::fs::write(old.join(".display"), b"Chapter 1").unwrap();
+            let locked = std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(old.join(locked_name))
+                .unwrap();
+            assert!(std::fs::read(old.join(locked_name)).is_err());
+
+            // A failed migration must not expose an incomplete provider or
+            // publish a version that makes the next attempt delete the source.
+            assert_eq!(Provider::open(saves.path(), Some("scid")).err(), Some(NO_ACCESS));
+            // Providers opened earlier must also see the error during
+            // enumeration, quota checks and writes, rather than hiding the save.
+            let provider = Provider { root: root.clone() };
+            extern "system" fn callback(_: *const ContainerInfo, _: *mut c_void) -> bool {
+                false
+            }
+            assert_eq!(provider.remaining(), Err(NO_ACCESS));
+            assert_eq!(
+                enumerate_containers(&OBJECT, &provider, std::ptr::null_mut(), Some(callback)),
+                NO_ACCESS
+            );
+            assert_eq!(
+                Update {
+                    name: "Player".into(),
+                    dir: container_dir(&root, "Player"),
+                    display: None,
+                    changes: vec![("Save Game Data".into(), Some(b"replacement".to_vec()))],
+                }
+                .submit(),
+                NO_ACCESS
+            );
+            assert!(old.is_dir());
+            assert!(!container_dir(&root, "Player").exists(), "{locked_name}");
+            drop(locked);
+            assert_eq!(std::fs::read(old.join("Save%20Game%20Data")).unwrap(), b"data");
+            assert_eq!(std::fs::read(old.join("Save%20Game%20Header")).unwrap(), b"header");
+            assert_eq!(std::fs::read(old.join(".display")).unwrap(), b"Chapter 1");
+
+            let provider = Provider::open(saves.path(), Some("scid")).unwrap();
+            let container = provider.container("Player");
+            assert!(!old.exists());
+            assert_eq!(
+                read(&container, None).unwrap(),
+                [
+                    ("Save Game Data".into(), b"data".to_vec()),
+                    ("Save Game Header".into(), b"header".to_vec()),
+                ]
+            );
+            let version = current_named(&container.dir, "Player").unwrap().unwrap();
+            assert_eq!(version.display, "Chapter 1");
+        }
     }
 
     /// An empty configuration id names none. As a folder name it would be
