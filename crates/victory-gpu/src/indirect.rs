@@ -1275,6 +1275,7 @@ void main() {
         eprintln!(
             "fine card hash executed on WARP: four subranges per piece and boundary changes verified"
         );
+    }
     /// The fetch inside flights (`crate::host::CARD_FETCH`), on the software
     /// adapter, in one list behind the compare as `Host::card_before`
     /// records it: each flagged piece takes a ticket and, while it is
