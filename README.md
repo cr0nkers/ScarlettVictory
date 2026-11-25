@@ -70,6 +70,10 @@ Recent ScatlettVIctory changes:
 - `census`, `shader-info` and `translate` report directory traversal errors
   instead of silently producing incomplete reports.
 
+- **Save integrity:** the newest save version's blobs are checked before older backups are pruned.
+  Missing or unreadable blobs now report errors instead of being counted as zero
+  bytes or silently omitted from quota and container reports.
+
 For the implementation layout, see [Architecture](docs/architecture.md).
 
 <details>
