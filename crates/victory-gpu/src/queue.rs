@@ -413,7 +413,6 @@ fn release_held_now(all: bool) {
     if lock(&WAITING).is_empty() {
         return;
     }
-    let _one = lock(&RELEASING);
     let was_here = RELEASING_HERE.replace(true);
     struct Leave(bool);
     impl Drop for Leave {
