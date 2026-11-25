@@ -147,10 +147,15 @@ impl Version {
         self.dir.join(i.to_string())
     }
 
-    fn sizes(&self) -> Vec<(String, u64)> {
-        let size = |i| std::fs::metadata(self.blob(i)).map_or(0, |m| m.len());
-        let blobs = self.blobs.iter().enumerate();
-        blobs.map(|(i, n)| (n.clone(), size(i))).collect()
+    fn sizes(&self) -> std::io::Result<Vec<(String, u64)>> {
+        self.blobs
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let blob = std::fs::File::open(self.blob(i))?;
+                Ok((name.clone(), blob.metadata()?.len()))
+            })
+            .collect()
     }
 }
 
@@ -181,7 +186,8 @@ fn parse_manifest(bytes: &[u8]) -> Option<Vec<String>> {
 /// left: unfinished versions and older ones.
 fn current(dir: &Path) -> std::io::Result<Option<Version>> {
     let mut committed = Vec::new();
-    for entry in std::fs::read_dir(dir)?.flatten() {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
         let file = entry.file_name();
         let file = file.to_string_lossy();
         if file.ends_with(".new") {
@@ -199,19 +205,23 @@ fn current(dir: &Path) -> std::io::Result<Option<Version>> {
     let mut names = parse_manifest(&std::fs::read(version.join(MANIFEST))?).ok_or_else(bad)?;
     let blobs = names.split_off(2);
     let [name, display] = <[String; 2]>::try_from(names).map_err(|_| bad())?;
-    // Keep the previous committed versions until the newest one's manifest
-    // is known to be readable; otherwise a damaged newest version destroys
-    // the only recoverable save before returning its error.
-    for old in &committed[..committed.len() - 1] {
-        std::fs::remove_dir_all(dir.join(format!("v{old}")))?;
-    }
-    Ok(Some(Version {
+    let current = Version {
         dir: version,
         number,
         name,
         display,
         blobs,
-    }))
+    };
+    // Preserve old versions if any blob in the newest version is missing or
+    // cannot be opened, just as we preserve them for an invalid manifest.
+    current.sizes()?;
+    // Keep the previous committed versions until the newest one's manifest
+    // and blobs are known to be readable; otherwise a damaged newest version
+    // destroys the only recoverable save before returning its error.
+    for old in &committed[..committed.len() - 1] {
+        std::fs::remove_dir_all(dir.join(format!("v{old}")))?;
+    }
+    Ok(Some(current))
 }
 
 /// The version of container `name` in `dir`; none for a missing container
@@ -332,11 +342,13 @@ fn migrate(root: &Path, name: &str, old: &Path) -> std::io::Result<PathBuf> {
 }
 
 fn used_bytes(root: &Path) -> std::io::Result<u64> {
-    Ok(containers(root)?
-        .iter()
-        .filter_map(|(name, dir)| current_named(dir, name).ok().flatten())
-        .map(|v| v.sizes().iter().map(|(_, size)| size).sum::<u64>())
-        .sum())
+    let mut total = 0;
+    for (name, dir) in containers(root)? {
+        if let Some(version) = current_named(&dir, &name)? {
+            total += version.sizes()?.iter().map(|(_, size)| size).sum::<u64>();
+        }
+    }
+    Ok(total)
 }
 
 struct Provider {
@@ -468,11 +480,16 @@ impl Update {
         if written > MAX_UPDATE {
             return UPDATE_TOO_BIG;
         }
-        let replaced: u64 = current.as_ref().map_or(0, |v| {
-            let sizes = v.sizes();
+        let replaced: u64 = if let Some(v) = &current {
+            let sizes = match v.sizes() {
+                Ok(sizes) => sizes,
+                Err(e) => return io_error(&self.dir, &e),
+            };
             let changed = sizes.iter().filter(|(n, _)| self.changes.iter().any(|(c, _)| c == n));
             changed.map(|(_, size)| size).sum()
-        });
+        } else {
+            0
+        };
         let root = self.dir.parent().unwrap_or(&self.dir);
         let free = storage::disk_free(root);
         let used = match used_bytes(root) {
@@ -593,27 +610,30 @@ fn report(
     context: *mut c_void,
     callback: ContainerCallback,
 ) -> HRESULT {
-    let infos: Vec<(CString, CString, u32, u64, i64)> = {
+    let infos = (|| -> std::io::Result<Vec<(CString, CString, u32, u64, i64)>> {
         let _saves = saves_lock();
-        let containers = match containers(root) {
-            Ok(containers) => containers,
-            Err(e) => return io_error(root, &e),
-        };
-        containers
-            .into_iter()
-            .filter(|(name, _)| keep(name))
-            .filter_map(|(name, dir)| current_named(&dir, &name).ok().flatten())
-            .map(|v| {
-                let modified = std::fs::metadata(v.dir.join(MANIFEST))
+        let mut infos = Vec::new();
+        for (name, dir) in containers(root)? {
+            if !keep(&name) {
+                continue;
+            }
+            let Some(version) = current_named(&dir, &name)? else {
+                continue;
+            };
+            let modified = std::fs::metadata(version.dir.join(MANIFEST))
                     .and_then(|m| m.modified())
                     .ok()
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map_or(0, |d| d.as_secs() as i64);
-                let size = v.sizes().iter().map(|(_, s)| s).sum();
-                let count = v.blobs.len() as u32;
-                (cstring(&v.name), cstring(&v.display), count, size, modified)
-            })
-            .collect()
+            let size = version.sizes()?.iter().map(|(_, s)| s).sum();
+            let count = version.blobs.len() as u32;
+            infos.push((cstring(&version.name), cstring(&version.display), count, size, modified));
+        }
+        Ok(infos)
+    })();
+    let infos = match infos {
+        Ok(infos) => infos,
+        Err(e) => return io_error(root, &e),
     };
     for (name, display, blob_count, total_size, last_modified) in &infos {
         let info = ContainerInfo {
@@ -762,8 +782,14 @@ extern "system" fn enumerate_blobs(
     let prefix = text(prefix).unwrap_or_default();
     let blobs = {
         let _saves = saves_lock();
-        let version = current_named(&c.dir, &c.name).ok().flatten();
-        version.map(|v| v.sizes()).unwrap_or_default()
+        let version = match current_named(&c.dir, &c.name) {
+            Ok(version) => version,
+            Err(e) => return io_error(&c.dir, &e),
+        };
+        match version.map(|v| v.sizes()).transpose() {
+            Ok(blobs) => blobs.unwrap_or_default(),
+            Err(e) => return io_error(&c.dir, &e),
+        }
     };
     for (name, size) in blobs.into_iter().filter(|(n, _)| n.starts_with(&prefix)) {
         let name = cstring(&name);
