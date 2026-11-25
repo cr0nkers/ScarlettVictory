@@ -177,7 +177,7 @@ fn main() -> Result<()> {
                 victory_shader::emit::set_host_max_wave(n);
             }
             if let Some(file) = warm {
-                return translate::warm(paths, &file, jobs);
+                return translate::warm(paths, &file, jobs.map(NonZeroUsize::get));
             }
             translate::run(paths, validate, pipelines, list, jobs)
         }

@@ -3539,10 +3539,6 @@ fn late_line(frames: f64) {
     if !late() {
         return;
     }
-    let s: Vec<f64> = LATE_STATS
-        .iter()
-        .map(|s| s.swap(0, Ordering::Relaxed) as f64 / frames)
-        .collect();
     #[cfg(feature = "diagnostics")]
     fill_check::line();
     fill_ahead::line(frames);
@@ -5212,6 +5208,7 @@ impl Host {
                 let plans: Vec<(u64, &CardPlan)> = flights.iter().filter_map(|f| f.card.as_ref().map(|card| (f.number, card))).collect();
                 let behind = flights.iter().map(|f| f.fence).max().unwrap_or(0);
                 let landed = flights.iter().map(|f| f.number).max().unwrap_or(0);
+                self.relay_card_back(&plans, fetch, behind, landed);
                 let mut back: Vec<Declared> = Vec::new();
                 for flight in &flights {
                     for (shadow, ranges) in &flight.back {
