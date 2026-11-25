@@ -269,8 +269,9 @@ fn commit(
         match source {
             Source::Data(data) => write(path, data)?,
             // Files are never changed in place, so sharing one is safe.
-            Source::Kept(from) => std::fs::hard_link(from, &path)
-                .or_else(|_| std::fs::copy(from, &path).map(drop))?,
+            Source::Kept(from) => {
+                std::fs::hard_link(from, &path).or_else(|_| std::fs::copy(from, &path).map(drop))?
+            }
         }
         step();
     }
@@ -485,7 +486,9 @@ impl Update {
                 Ok(sizes) => sizes,
                 Err(e) => return io_error(&self.dir, &e),
             };
-            let changed = sizes.iter().filter(|(n, _)| self.changes.iter().any(|(c, _)| c == n));
+            let changed = sizes
+                .iter()
+                .filter(|(n, _)| self.changes.iter().any(|(c, _)| c == n));
             changed.map(|(_, size)| size).sum()
         } else {
             0
@@ -544,7 +547,11 @@ fn read(c: &Container, names: Option<Vec<String>>) -> Result<Vec<(String, Vec<u8
     names
         .into_iter()
         .map(|name| {
-            let i = version.blobs.iter().position(|b| *b == name).ok_or(BLOB_NOT_FOUND)?;
+            let i = version
+                .blobs
+                .iter()
+                .position(|b| *b == name)
+                .ok_or(BLOB_NOT_FOUND)?;
             let data = std::fs::read(version.blob(i)).map_err(|e| io_error(&c.dir, &e))?;
             Ok((name, data))
         })
@@ -621,13 +628,19 @@ fn report(
                 continue;
             };
             let modified = std::fs::metadata(version.dir.join(MANIFEST))
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map_or(0, |d| d.as_secs() as i64);
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_secs() as i64);
             let size = version.sizes()?.iter().map(|(_, s)| s).sum();
             let count = version.blobs.len() as u32;
-            infos.push((cstring(&version.name), cstring(&version.display), count, size, modified));
+            infos.push((
+                cstring(&version.name),
+                cstring(&version.display),
+                count,
+                size,
+                modified,
+            ));
         }
         Ok(infos)
     })();
@@ -1023,7 +1036,10 @@ mod tests {
     fn a_full_disk_is_not_the_quota() {
         let mb = 1 << 20;
         assert_eq!(no_room(2 * mb, 0, 0, mb), Some(OUT_OF_LOCAL_STORAGE));
-        assert_eq!(no_room(2 * mb, 0, QUOTA - mb, 100 * mb), Some(QUOTA_EXCEEDED));
+        assert_eq!(
+            no_room(2 * mb, 0, QUOTA - mb, 100 * mb),
+            Some(QUOTA_EXCEEDED)
+        );
         // Replacing a blob of the same size fits a full quota.
         assert_eq!(no_room(mb, mb, QUOTA, 100 * mb), None);
         assert_eq!(no_room(mb, 0, 0, mb), None);
@@ -1052,18 +1068,28 @@ mod tests {
     }
 
     fn old_state() -> Option<(String, Vec<(String, String)>)> {
-        Some(("one".into(), vec![("a".into(), "old a".into()), ("b".into(), "old b".into())]))
+        Some((
+            "one".into(),
+            vec![("a".into(), "old a".into()), ("b".into(), "old b".into())],
+        ))
     }
 
     /// Run by the crash test in a child process; does nothing otherwise.
     #[test]
     fn crash_child() {
-        let (Ok(root), Ok(op)) = (std::env::var("VICTORY_SAVE_CHILD"), std::env::var("VICTORY_SAVE_OP")) else {
+        let (Ok(root), Ok(op)) = (
+            std::env::var("VICTORY_SAVE_CHILD"),
+            std::env::var("VICTORY_SAVE_OP"),
+        ) else {
             return;
         };
         let root = PathBuf::from(root);
         let hr = if op == "update" {
-            update(&root, "two", &[("a", Some("new a")), ("b", None), ("c", Some("new c"))])
+            update(
+                &root,
+                "two",
+                &[("a", Some("new a")), ("b", None), ("c", Some("new c"))],
+            )
         } else {
             delete(&root, "Slot")
         };
@@ -1076,15 +1102,25 @@ mod tests {
     /// new one.
     #[test]
     fn a_kill_at_any_step_leaves_old_or_new() {
-        let new = Some(("two".into(), vec![("a".into(), "new a".into()), ("c".into(), "new c".into())]));
+        let new = Some((
+            "two".into(),
+            vec![("a".into(), "new a".into()), ("c".into(), "new c".into())],
+        ));
         for (op, after) in [("update", new), ("delete", None)] {
             let mut seen = (0, 0);
             for stop in 1.. {
                 let dir = tempfile::tempdir().unwrap();
                 let root = dir.path();
-                assert_eq!(update(root, "one", &[("a", Some("old a")), ("b", Some("old b"))]), S_OK);
+                assert_eq!(
+                    update(root, "one", &[("a", Some("old a")), ("b", Some("old b"))]),
+                    S_OK
+                );
                 let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-                    .args(["--exact", "modules::xgamesave::tests::crash_child", "--nocapture"])
+                    .args([
+                        "--exact",
+                        "modules::xgamesave::tests::crash_child",
+                        "--nocapture",
+                    ])
                     .args(["--test-threads=1"])
                     .env("VICTORY_SAVE_CHILD", root)
                     .env("VICTORY_SAVE_OP", op)
@@ -1129,16 +1165,35 @@ mod tests {
         for good in ["Profile/Slot_1", "a/b/Save-2.sav", "x", &"a".repeat(256)] {
             assert!(valid_container(good), "{good}");
         }
-        for bad in ["a b", "", "a/", "a.", "a..b", "a.b/c", "a-b/c", &"a".repeat(257)] {
+        for bad in [
+            "a b",
+            "",
+            "a/",
+            "a.",
+            "a..b",
+            "a.b/c",
+            "a-b/c",
+            &"a".repeat(257),
+        ] {
             assert!(!valid_container(bad), "{bad}");
         }
 
         // Containers and blobs differing only in case, reserved device
         // names, characters the host forbids, long names: all distinct.
         let dir = tempfile::tempdir().unwrap();
-        let p = Provider { root: dir.path().into() };
+        let p = Provider {
+            root: dir.path().into(),
+        };
         let long = "n".repeat(300);
-        let blobs = ["A", "a", "CON", "nul.txt", "x/y:z*?\"<>|", long.as_str(), "end. "];
+        let blobs = [
+            "A",
+            "a",
+            "CON",
+            "nul.txt",
+            "x/y:z*?\"<>|",
+            long.as_str(),
+            "end. ",
+        ];
         for container in ["Save", "save", "SAVE/CON.x"] {
             let c = p.container(container);
             let u = Update {
@@ -1153,7 +1208,11 @@ mod tests {
             assert_eq!(u.submit(), S_OK, "{container}");
         }
         let _saves = saves_lock();
-        let names: Vec<String> = containers(dir.path()).unwrap().into_iter().map(|c| c.0).collect();
+        let names: Vec<String> = containers(dir.path())
+            .unwrap()
+            .into_iter()
+            .map(|c| c.0)
+            .collect();
         drop(_saves);
         assert_eq!(names, ["SAVE/CON.x", "Save", "save"]);
         for container in ["Save", "save", "SAVE/CON.x"] {
@@ -1170,7 +1229,10 @@ mod tests {
     #[test]
     fn the_old_layout_moves_over() {
         let saves = tempfile::tempdir().unwrap();
-        let root = saves.path().join(format!("{:016X}", xuser::XUID)).join("scid");
+        let root = saves
+            .path()
+            .join(format!("{:016X}", xuser::XUID))
+            .join("scid");
         let old = root.join("Player");
         std::fs::create_dir_all(&old).unwrap();
         std::fs::write(old.join("Save%20Game%20Data"), b"data").unwrap();
@@ -1199,7 +1261,10 @@ mod tests {
 
         for locked_name in ["Save%20Game%20Data", ".display"] {
             let saves = tempfile::tempdir().unwrap();
-            let root = saves.path().join(format!("{:016X}", xuser::XUID)).join("scid");
+            let root = saves
+                .path()
+                .join(format!("{:016X}", xuser::XUID))
+                .join("scid");
             let old = root.join("Player");
             std::fs::create_dir_all(&old).unwrap();
             std::fs::write(old.join("Save%20Game%20Data"), b"data").unwrap();
@@ -1214,7 +1279,10 @@ mod tests {
 
             // A failed migration must not expose an incomplete provider or
             // publish a version that makes the next attempt delete the source.
-            assert_eq!(Provider::open(saves.path(), Some("scid")).err(), Some(NO_ACCESS));
+            assert_eq!(
+                Provider::open(saves.path(), Some("scid")).err(),
+                Some(NO_ACCESS)
+            );
             // Providers opened earlier must also see the error during
             // enumeration, quota checks and writes, rather than hiding the save.
             let provider = Provider { root: root.clone() };
@@ -1239,8 +1307,14 @@ mod tests {
             assert!(old.is_dir());
             assert!(!container_dir(&root, "Player").exists(), "{locked_name}");
             drop(locked);
-            assert_eq!(std::fs::read(old.join("Save%20Game%20Data")).unwrap(), b"data");
-            assert_eq!(std::fs::read(old.join("Save%20Game%20Header")).unwrap(), b"header");
+            assert_eq!(
+                std::fs::read(old.join("Save%20Game%20Data")).unwrap(),
+                b"data"
+            );
+            assert_eq!(
+                std::fs::read(old.join("Save%20Game%20Header")).unwrap(),
+                b"header"
+            );
             assert_eq!(std::fs::read(old.join(".display")).unwrap(), b"Chapter 1");
 
             let provider = Provider::open(saves.path(), Some("scid")).unwrap();
@@ -1329,7 +1403,10 @@ mod tests {
             S_OK
         );
         type Delete = extern "system" fn(This, *mut Update, *const c_char) -> HRESULT;
-        assert_eq!(method::<Delete>(&OBJECT, 0xd0)(this, update, c"gone".as_ptr()), S_OK);
+        assert_eq!(
+            method::<Delete>(&OBJECT, 0xd0)(this, update, c"gone".as_ptr()),
+            S_OK
+        );
         type Submit = extern "system" fn(This, *const Update, *mut AsyncBlock) -> HRESULT;
         let mut b = block();
         assert_eq!(method::<Submit>(&OBJECT, 0xe0)(this, update, &mut b), S_OK);

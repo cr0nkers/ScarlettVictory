@@ -16,19 +16,26 @@ developer or publisher.
 
 ## Current progress (2026-11-25)
 
-**Not playable yet.** The opening cutscene and first gameplay scene render,
-but world performance is around 2–4 fps and shadowed areas are black.
+**Not playable yet.** The opening cutscene and first gameplay scene render.
+On the current test PC, the latest 4K run is around 5 fps most of the time,
+with higher peaks and dips in heavier scenes. Shadowed areas are still very
+dark or black.
 
-Gameplay results below are inherited from the source fork's report dated
-2026-11-25; they have not been revalidated in ScatlettVIctory. That report
-used Windows 11, an Intel i7-14700KF, an NVIDIA RTX 4070 12 GB, 32 GB RAM,
-and the Series X profile.
+The current results below combine the source fork's report and a live test of
+ScatlettVIctory on 2026-11-25. The live run used the Series X profile at
+3840×2160 with 90% texture residency. It reached about 5 fps most of the
+time, with peaks above that and scene-dependent drops. The older 420–450 ms
+per-frame result (about 2.2–2.4 fps) is a useful baseline; the latest run is
+more than twice as fast during typical scenes. System memory use was still
+around 24 GB, so this run improved frame rate without lowering the texture
+residency setting. These measurements are from one PC and one title run; the
+other feature statuses below are inherited from the source fork's report.
 
 | Area | Reported status |
 |------|-----------------|
 | Boot and menus | Start screen and menus run at 30 fps |
 | Opening cutscene | Plays through in order, with lighting |
-| First gameplay scene | Characters, textures, sky and sunlit exterior render; world rendering remains incomplete |
+| First gameplay scene | Characters, textures, sky and sunlit exterior render; around 5 fps most of the time at 4K in the latest run; world rendering remains incomplete |
 | Input and interface | HUD, pause menu and controller input work |
 | Saves | Autosaves a checkpoint and loads it again |
 | Lighting | Direct sunlight renders; ray-traced bounce light and lamp/sun shadows do not run end to end |
@@ -39,8 +46,9 @@ and the Series X profile.
 
 - **Lighting:** areas without direct sunlight remain black. See the
   [ray-tracing progress and known gaps](docs/fork-ray-tracing.md).
-- **Performance:** reported default frame times are 420–450 ms, with around
-  24 GB of memory in use during play.
+- **Performance:** heavy scenes still dip below 5 fps. The 4K run uses about
+  24 GB of system memory; the faster result comes from GPU buffer readback
+  and merge scheduling changes, with 90% texture residency retained.
 - **Rendering coverage:** the first gameplay room can be missing after the
   cutscene, and some shaders still fail to translate.
 - **Hardware coverage:** the source fork's gameplay results cover one PC.
@@ -54,13 +62,31 @@ exhaustion, lighting-buffer copies, texture sampling and several shader
 translation failures. Memory and submission work includes GPU buffer copies,
 shader optimization, asynchronous submissions and pipeline-cache fixes.
 
-Most newer performance paths are experimental and off by default. The source
-fork reported 240–350 ms per frame with either `VICTORY_RELAY=2` or the
-combination `VICTORY_LATE_WAIT=3 VICTORY_WIDE_BACK=1
-VICTORY_CARD_BUFFERS_MIN_MB=1 VICTORY_CARD_BUFFERS_MB=1024`.
-`VICTORY_INPLACE` is also experimental. The wave64 barrier form is off unless
-`VICTORY_WAVE_WIDE=1`, following a reported GPU hang. Each switch is described
-where it is read in the code.
+The latest 4K run used the following experimental settings. They keep texture
+residency at 90%; they do not lower texture resolution. The improved result
+is specific to this title and PC, and the frame rate still varies by scene.
+
+```powershell
+$env:VICTORY_RELAY = '2'
+$env:VICTORY_TEXTURE_NO_WAIT = '1'
+$env:VICTORY_CARD_REHASH_RUNS = '0'
+$env:VICTORY_TEXTURE_ROOM_PERCENT = '90'
+$env:VICTORY_PARALLEL_CARD_HASH = '1'
+$env:VICTORY_WIDE_MERGE = '1'
+$env:VICTORY_FINE_CARD_READBACK = '1'
+$env:VICTORY_DISPLAY_MODE = '3840x2160'
+$env:VICTORY_CARD_BUFFERS_MIN_MB = '1'
+$env:VICTORY_CARD_BUFFERS_MB = '1024'
+cargo build --release -p victory
+target\release\victory.exe run "D:\ScarlettV1ctory-Game\game\game_scarlett_master.exe" --console series-x --execute
+```
+
+The source fork previously reported 240–350 ms per frame with either
+`VICTORY_RELAY=2` or the combination `VICTORY_LATE_WAIT=3
+VICTORY_WIDE_BACK=1 VICTORY_CARD_BUFFERS_MIN_MB=1
+VICTORY_CARD_BUFFERS_MB=1024`. `VICTORY_INPLACE` is also experimental. The
+wave64 barrier form is off unless `VICTORY_WAVE_WIDE=1`, following a reported
+GPU hang. Each switch is described where it is read in the code.
 
 Recent ScatlettVIctory changes:
 

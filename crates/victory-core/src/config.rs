@@ -139,7 +139,9 @@ fn default_dir(name: &str) -> Result<PathBuf> {
         std::env::var_os(xdg_var)
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(home_fallback)))
-            .context("cannot determine a user directory; set VICTORY_CACHE_DIR and VICTORY_DATA_DIR")?
+            .context(
+                "cannot determine a user directory; set VICTORY_CACHE_DIR and VICTORY_DATA_DIR",
+            )?
     };
     Ok(base.join("victory").join(name))
 }
