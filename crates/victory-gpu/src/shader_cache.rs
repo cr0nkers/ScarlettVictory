@@ -10,8 +10,8 @@
 //! are ignored anyway).
 
 use std::path::PathBuf;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use victory_pipeline::{Cache, Converter};
 use victory_shader::emit::{HostShader, StaticSampler, UserData};
@@ -108,6 +108,7 @@ pub(crate) fn host_shader(container: &[u8]) -> Result<HostShader, String> {
 struct Translate<F> {
     translate: F,
     ran: AtomicBool,
+    result: Mutex<Option<Result<HostShader, String>>>,
 }
 
 impl<F: Fn(&[u8]) -> Result<HostShader, String> + Send + Sync> Converter for Translate<F> {
@@ -120,8 +121,31 @@ impl<F: Fn(&[u8]) -> Result<HostShader, String> + Send + Sync> Converter for Tra
     }
     fn convert(&self, input: &[u8]) -> anyhow::Result<Vec<u8>> {
         self.ran.store(true, Ordering::Relaxed);
-        let shader = (self.translate)(&input[32..]).map_err(anyhow::Error::msg)?;
-        Ok(encode(&shader))
+        let translated = (self.translate)(&input[32..]);
+        let mut result = self.result.lock().unwrap_or_else(|e| e.into_inner());
+        match translated {
+            Ok(shader) => {
+                let encoded = encode(&shader);
+                *result = Some(Ok(shader));
+                Ok(encoded)
+            }
+            Err(error) => {
+                *result = Some(Err(error.clone()));
+                Err(anyhow::Error::msg(error))
+            }
+        }
+    }
+}
+
+impl<F: Fn(&[u8]) -> Result<HostShader, String>> Translate<F> {
+    /// Uses a successful translation even if the cache could not publish it;
+    /// otherwise translates directly, bypassing disk for this shader.
+    fn uncached(&self, container: &[u8]) -> Result<HostShader, String> {
+        self.result
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+            .unwrap_or_else(|| (self.translate)(container))
     }
 }
 
@@ -135,11 +159,18 @@ fn cached(
     let converter = Translate {
         translate,
         ran: AtomicBool::new(false),
+        result: Mutex::new(None),
     };
     for _ in 0..2 {
-        let path = cache
-            .get_or_convert(&converter, &input)
-            .map_err(|e| format!("{e:#}"))?;
+        let path = match cache.get_or_convert(&converter, &input) {
+            Ok(path) => path,
+            Err(e) => {
+                MISSES.fetch_add(1, Ordering::Relaxed);
+                let error = format!("{e:#}");
+                tracing::warn!(%error, "shader cache unavailable; translating without it");
+                return converter.uncached(container);
+            }
+        };
         if let Some(shader) = std::fs::read(&path).ok().and_then(|b| decode(&b)) {
             let (counter, what) = if converter.ran.load(Ordering::Relaxed) {
                 (&MISSES, "translated and cached")
@@ -154,7 +185,7 @@ fn cached(
         let _ = std::fs::remove_file(&path);
     }
     MISSES.fetch_add(1, Ordering::Relaxed);
-    (converter.translate)(container)
+    converter.uncached(container)
 }
 
 const MAGIC: &[u8; 4] = b"VSH1";
