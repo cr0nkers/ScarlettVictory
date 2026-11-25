@@ -2,6 +2,7 @@
 //! what it cannot handle yet is tallied (decision 0003).
 
 use std::collections::{BTreeMap, HashSet};
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -157,7 +158,7 @@ pub fn run(
     validate: bool,
     pipelines: bool,
     list: bool,
-    jobs: Option<usize>,
+    jobs: Option<NonZeroUsize>,
 ) -> Result<()> {
     let paths = crate::default_paths(paths)?;
     // `VICTORY_HOST_MAX_WAVE=32`: translate as for a host whose waves have
@@ -184,8 +185,10 @@ pub fn run(
         .map(|(v, p)| (v.trim().to_owned(), p.trim().to_owned()))
         .collect();
     let kept = std::sync::Arc::new(Mutex::new(Vec::new()));
-    let threads =
-        jobs.unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get()));
+    let threads = jobs.map_or_else(
+        || std::thread::available_parallelism().map_or(4, |n| n.get()),
+        NonZeroUsize::get,
+    );
     let seen = Mutex::new(HashSet::new());
     let total = Mutex::new(Tally::default());
     for root in &paths {
