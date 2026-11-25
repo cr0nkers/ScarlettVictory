@@ -689,6 +689,10 @@ mod card_tests {
                         }
                     }
                     assert_eq!(next, whole_hi, "{start:#x} {from} {to} piece {i}");
+                }
+            }
+        }
+    }
     /// The fetch inside flights (`CARD_FETCH` in host.rs) copies each piece
     /// from `inflight_piece_from` on: what the merge takes of the piece lies
     /// in that slot.
