@@ -126,13 +126,21 @@ fn subdir(root: &Path, sub: &str) -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// `%LOCALAPPDATA%/victory/<name>` (elsewhere the XDG or home cache).
+/// `%LOCALAPPDATA%/victory/<name>` on Windows, or the matching XDG directory.
 fn default_dir(name: &str) -> Result<PathBuf> {
-    let base = std::env::var_os("LOCALAPPDATA")
-        .or_else(|| std::env::var_os("XDG_CACHE_HOME"))
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
-        .context("cannot determine a user directory; set VICTORY_CACHE_DIR and VICTORY_DATA_DIR")?;
+    let base = if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        PathBuf::from(local_app_data)
+    } else {
+        let (xdg_var, home_fallback) = if name == "data" {
+            ("XDG_DATA_HOME", ".local/share")
+        } else {
+            ("XDG_CACHE_HOME", ".cache")
+        };
+        std::env::var_os(xdg_var)
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(home_fallback)))
+            .context("cannot determine a user directory; set VICTORY_CACHE_DIR and VICTORY_DATA_DIR")?
+    };
     Ok(base.join("victory").join(name))
 }
 
