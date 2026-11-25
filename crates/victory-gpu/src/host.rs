@@ -1849,7 +1849,9 @@ static LINE_LANDED: std::sync::Condvar = std::sync::Condvar::new();
 /// (`Host::card_before`). Held from the taking of the ranges until their
 /// list is on the queue, and while a fetch of pieces goes to the queue: a
 /// fetch sent with the count at N ran behind sends 1..N and ahead of every
-/// later one.
+/// later one. Rendering submissions also hold it through their completion
+/// signal, and a fetch keeps it through its own signal, so neither waits
+/// for unrelated command lists inserted between its copy and its signal.
 static QUEUE_ORDER: Mutex<u64> = Mutex::new(0);
 
 /// Since the last frame-rate line, of the thread that lands flights
@@ -3423,9 +3425,9 @@ impl Host {
                 let order = QUEUE_ORDER.lock().unwrap_or_else(|e| e.into_inner());
                 self.queue.ExecuteCommandLists(&lists);
                 let after = *order;
+                self.queue.Signal(&fence, sent)?;
                 drop(order);
                 self.card_sent();
-                self.queue.Signal(&fence, sent)?;
                 fence.SetEventOnCompletion(sent, event)?;
                 WaitForSingleObject(event, INFINITE);
                 Ok(after)
@@ -4094,11 +4096,16 @@ impl Host {
         let prepared = std::time::Instant::now();
         if late {
             *submitted += 1;
+            // The relay submits readback copies on this queue too. Keep
+            // each batch and its signal together: otherwise either fence
+            // can end up behind unrelated work from the other thread.
+            let order = relay().then(|| QUEUE_ORDER.lock().unwrap_or_else(|e| e.into_inner()));
             // SAFETY: closed lists; the fence is ours.
             let signalled = unsafe {
                 self.queue.ExecuteCommandLists(&lists);
                 self.queue.Signal(&self.fence, *submitted)
             };
+            drop(order);
             self.card_sent();
             if let Err(e) = signalled {
                 fail(format_args!("a submission sent ahead could not be followed by a signal ({e})"));
