@@ -516,9 +516,9 @@ What did it, on top of the list below:
     flight); the copy-back thread's wait fell from about 125 to 7 ms a
     frame.
   - `VICTORY_INDIRECT_WINDOW=1`: see above.
-  - `VICTORY_TEXTURE_NO_WAIT=1`: a texture refresh no longer waits while
-    the title remaps memory; the loading phase had 5 readings over a
-    second where it had 18.
+  - `VICTORY_TEXTURE_NO_WAIT`: a texture refresh no longer waits while
+    the title remaps memory; now on by default. The loading phase had 5
+    readings over a second where it had 18.
   - `VICTORY_MERGE_GAP=64 VICTORY_MERGE_RUNS=4096`: title bytes put in
     under flights' shader writes are joined over small gaps (NOT exact:
     read the comment at `merge_gap` before using it).
@@ -636,14 +636,19 @@ use):
   enable `VICTORY_LEVELS_ON_DEMAND` automatically; `=0` opts out and `=1`
   enables it on other cards. A texture takes card memory only for the levels
   the title holds (2.2 to 3.0 GB of the copies were levels it does not hold).
-  The implementation has only been tested on the software adapter, so the
-  automatic NVIDIA path still needs a real-card run.
+  It was exercised on an 8 GiB NVIDIA card during world streaming: 1.4 GB of
+  mip levels the title did not hold stayed unallocated, though frame rates
+  remained poor under heavy pipeline and memory pressure.
 - Refused texture slots are held back for a few seconds so that a pass
   reaches the slots behind them (`VICTORY_FULL_CARD_PASS=0` = as before);
   room can be kept for the card copies of title buffers
   (`VICTORY_CARD_ROOM_FOR_BUFFERS=1`, off).
 
 Tools and diagnostics:
+- `VICTORY_TEXTURE_NO_WAIT` avoids blocking texture refreshes while the
+  runtime remaps title memory; this is on by default, and `=0` opts out. A
+  texture may appear a frame later if a page is temporarily unavailable.
+  On an 8 GiB NVIDIA streaming run, this removed a 2.9-second-per-frame wait.
 - `VICTORY_PIPELINE_WORKERS` limits pipeline builder threads to 1–8 (default:
   half the logical processors, between 2 and 8). On a 32 GB PC, setting it
   to `2` reduces simultaneous driver pipeline builds and may slow cold-cache
