@@ -1837,12 +1837,24 @@ pub fn title_memory_remapped(at: usize, len: usize) {
         // (run 235: 266 to 565 failed askings a frame with the blocks
         // remembered from their guards alone, no fewer than without).
         g.viewed.extend(at / BLOCK..at.saturating_add(len).div_ceil(BLOCK));
-        return;
+    } else {
+        // What the range shows is new: no longer known to be a view.
+        let viewed: Vec<usize> = g.viewed.range(at / BLOCK..at.saturating_add(len).div_ceil(BLOCK)).copied().collect();
+        for block in viewed {
+            g.viewed.remove(&block);
+        }
     }
-    // What the range shows is new: no longer known to be a view.
-    let viewed: Vec<usize> = g.viewed.range(at / BLOCK..at.saturating_add(len).div_ceil(BLOCK)).copied().collect();
-    for block in viewed {
-        g.viewed.remove(&block);
+    drop(g);
+
+    // A new mapping at a reused address has no relationship to writes
+    // journaled for the previous contents. It can also invalidate an
+    // asking cached for the current submission.
+    let (first, last) = (at / PAGE, at.saturating_add(len).div_ceil(PAGE));
+    let mut j = JOURNAL.lock().unwrap_or_else(|e| e.into_inner());
+    j.written.retain(|&page, _| page < first || page >= last);
+    if j.ahead.iter().any(|&(a, b)| a < last && first < b) {
+        j.ahead.clear();
+        j.kept = false;
     }
 }
 
@@ -1924,6 +1936,9 @@ mod tests {
         } as usize;
         assert_ne!(p, 0);
         let (start, end) = (p, p + 4 * PAGE);
+        // This address may have held a different allocation in an earlier
+        // parallel test; tell the journal that the mapping is new.
+        title_memory_remapped(start, end - start);
         let (_, before) = writes(start, end, false).expect("watched");
         assert!(before.is_empty());
         // SAFETY: committed pages of ours.
