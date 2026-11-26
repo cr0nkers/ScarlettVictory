@@ -305,12 +305,18 @@ fn next() -> Arc<Pending> {
     }
 }
 
-/// Starts the workers (half the logical processors, 2 to 8) on first use.
+/// Starts the workers (half the logical processors, 2 to 8, unless capped
+/// by `VICTORY_PIPELINE_WORKERS`) on first use.
 fn workers() -> bool {
     static RUNNING: OnceLock<bool> = OnceLock::new();
     *RUNNING.get_or_init(|| {
         let mut running = false;
-        let workers = std::thread::available_parallelism().map_or(2, |n| (n.get() / 2).clamp(2, 8));
+        let parallelism = std::thread::available_parallelism().ok().map(|n| n.get());
+        let workers = worker_count(
+            std::env::var("VICTORY_PIPELINE_WORKERS").ok().as_deref(),
+            parallelism,
+        );
+        tracing::info!(workers, "host pipeline builder threads");
         for i in 0..workers {
             let spawned = std::thread::Builder::new()
                 .name(format!("victory-pipelines-{i}"))
@@ -340,6 +346,13 @@ fn workers() -> bool {
     })
 }
 
+fn worker_count(setting: Option<&str>, parallelism: Option<usize>) -> usize {
+    let default = parallelism.map_or(2, |n| (n / 2).clamp(2, 8));
+    setting
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .map_or(default, |count| count.clamp(1, 8))
+}
+
 /// The most pipelines waiting at once since the workers last ran out.
 static PEAK: AtomicU64 = AtomicU64::new(0);
 
@@ -361,6 +374,16 @@ fn drained() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pipeline_worker_limit_is_bounded_and_optional() {
+        assert_eq!(worker_count(None, Some(16)), 8);
+        assert_eq!(worker_count(None, Some(4)), 2);
+        assert_eq!(worker_count(Some("2"), Some(16)), 2);
+        assert_eq!(worker_count(Some("0"), Some(16)), 1);
+        assert_eq!(worker_count(Some("99"), Some(16)), 8);
+        assert_eq!(worker_count(Some("invalid"), Some(16)), 8);
+    }
 
     /// A first use queues the pipeline and, within the budget, gets the
     /// worker's answer (here: no host pipeline for no shaders).

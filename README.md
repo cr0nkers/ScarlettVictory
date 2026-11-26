@@ -644,6 +644,10 @@ use):
   (`VICTORY_CARD_ROOM_FOR_BUFFERS=1`, off).
 
 Tools and diagnostics:
+- `VICTORY_PIPELINE_WORKERS` limits pipeline builder threads to 1–8 (default:
+  half the logical processors, between 2 and 8). On a 32 GB PC, setting it
+  to `2` reduces simultaneous driver pipeline builds and may slow cold-cache
+  loading; compiled pipelines are reused from the disk library on later runs.
 - `victory translate <shader file> --warm all --jobs N` translates every
   shader ahead of a run, on the processor only (about 4.5 to 6.5 minutes
   here); the shader cache is keyed on the translator's source, so a new
