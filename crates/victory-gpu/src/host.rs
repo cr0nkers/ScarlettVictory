@@ -79,6 +79,12 @@ static RETIRED: Mutex<Vec<(u64, Retired)>> = Mutex::new(Vec::new());
 static STARTED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static FINISHED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Submissions started and not finished yet: lists the card may still be
+/// running, which read the view heap's slots as they run.
+pub(crate) fn submissions_in_flight() -> u64 {
+    STARTED.load(Ordering::Relaxed).saturating_sub(FINISHED.load(Ordering::Relaxed))
+}
+
 /// A retired object, dropped on whatever thread finishes the submission.
 struct Retired(#[allow(dead_code)] Box<dyn std::any::Any>);
 // SAFETY: what is retired is D3D12 objects (free-threaded) and the
@@ -6891,6 +6897,23 @@ impl Host {
                 NAMED[0].load(Ordering::Relaxed),
                 NAMED[1].load(Ordering::Relaxed)
             ));
+            // The runtime can classify a removal even when it supplies no
+            // fault address. Older runtimes still have the DRED1 report below.
+            match dred.cast::<ID3D12DeviceRemovedExtendedData2>() {
+                Ok(dred2) => {
+                    // SAFETY: a query on the live DRED interface.
+                    let state = unsafe { dred2.GetDeviceState() };
+                    let name = match state {
+                        D3D12_DRED_DEVICE_STATE_HUNG => "hung",
+                        D3D12_DRED_DEVICE_STATE_FAULT => "fault",
+                        D3D12_DRED_DEVICE_STATE_PAGEFAULT => "page fault",
+                        D3D12_DRED_DEVICE_STATE_UNKNOWN => "unknown",
+                        _ => "unrecognized",
+                    };
+                    text.push_str(&format!("; DRED device state {name} ({})", state.0));
+                }
+                Err(e) => text.push_str(&format!("; DRED device state unavailable ({:#010X})", e.code().0)),
+            }
         }
         // SAFETY: the outputs are the runtime's, valid while the device
         // lives; nodes are walked as linked, histories have their counts.
