@@ -632,10 +632,12 @@ Card memory (the test card is full from the first frame of the world: 85 to
 99 % of its budget for a whole run, about 26,000 texture copies let go and
 3,400 made again in five minutes, 2.8 GB of render targets that are all in
 use):
-- Levels on demand, **off by default** (`VICTORY_LEVELS_ON_DEMAND=1`): a
-  texture the title fills takes card memory only for the levels the title
-  holds (2.2 to 3.0 GB of the copies were levels it does not hold). Its test
-  runs on the software adapter; it has not run on a card yet.
+- Levels on demand: NVIDIA cards with at most 8 GiB of dedicated memory
+  enable `VICTORY_LEVELS_ON_DEMAND` automatically; `=0` opts out and `=1`
+  enables it on other cards. A texture takes card memory only for the levels
+  the title holds (2.2 to 3.0 GB of the copies were levels it does not hold).
+  The implementation has only been tested on the software adapter, so the
+  automatic NVIDIA path still needs a real-card run.
 - Refused texture slots are held back for a few seconds so that a pass
   reaches the slots behind them (`VICTORY_FULL_CARD_PASS=0` = as before);
   room can be kept for the card copies of title buffers

@@ -9735,6 +9735,23 @@ pub(crate) fn legal_for(flags: u32, state: u32) -> u32 {
 }
 
 impl Host {
+    /// Whether the selected adapter is an NVIDIA card with at most 8 GiB
+    /// of dedicated memory, where texture mip residency needs a tighter
+    /// budget than the general path uses.
+    pub(crate) fn nvidia_low_vram(&self) -> bool {
+        const NVIDIA: u32 = 0x10de;
+        const EIGHT_GIB: u64 = 8 << 30;
+        let Some(adapter) = self.adapter.as_ref() else {
+            return false;
+        };
+        // SAFETY: a live DXGI adapter; this only reads its description.
+        unsafe { adapter.cast::<IDXGIAdapter1>().and_then(|a| a.GetDesc1()) }
+            .is_ok_and(|desc| {
+                let memory = desc.DedicatedVideoMemory as u64;
+                desc.VendorId == NVIDIA && memory != 0 && memory <= EIGHT_GIB
+            })
+    }
+
     /// The card's memory as the system accounts it to this process, in
     /// bytes: the budget and the use of the card's own memory, then of the
     /// PC's memory shared with the card (where the system moves what does

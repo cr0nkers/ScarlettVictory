@@ -46,8 +46,9 @@
 //! Only for a texture the title places in memory and fills, two-dimensional,
 //! one layer, more than one level, of [`floor`] bytes or more, whose memory
 //! is not all its own when the host copy is made (`resource.rs` `hosted`);
-//! every other texture is made as before. Off unless
-//! `VICTORY_LEVELS_ON_DEMAND=1`.
+//! every other texture is made as before. On automatically for NVIDIA cards
+//! with at most 8 GiB of dedicated memory; `VICTORY_LEVELS_ON_DEMAND=1`
+//! enables it elsewhere, and `=0` disables it.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -71,19 +72,24 @@ const HEAP_TILES: u32 = 1024;
 /// no heap could be had); uploads recorded again for such a level.
 pub(crate) static STATS: [AtomicU64; 11] = [const { AtomicU64::new(0) }; 11];
 
-/// Whether textures are made this way: the switch
-/// (`VICTORY_LEVELS_ON_DEMAND=1`; off by default), and a card that reads
-/// zeros from, and drops writes to, levels without memory (tiled resources
-/// tier 2).
+/// Whether textures are made this way: by default on NVIDIA cards with at
+/// most 8 GiB of dedicated memory, unless `VICTORY_LEVELS_ON_DEMAND=0`, or
+/// by explicit opt-in (`=1`) elsewhere; and a card that reads zeros from,
+/// and drops writes to, levels without memory (tiled resources tier 2).
 pub(crate) fn wanted() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
-        if !std::env::var_os("VICTORY_LEVELS_ON_DEMAND").is_some_and(|v| v == "1") {
-            return false;
-        }
         let Some(host) = host() else {
             return false;
         };
+        let automatic = host.nvidia_low_vram();
+        let enabled = levels_on_demand_enabled(
+            std::env::var("VICTORY_LEVELS_ON_DEMAND").ok().as_deref(),
+            automatic,
+        );
+        if !enabled {
+            return false;
+        }
         let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS::default();
         // SAFETY: a plain query into a struct of its own size.
         let asked = unsafe {
@@ -98,11 +104,16 @@ pub(crate) fn wanted() -> bool {
         tracing::info!(
             tier,
             on,
+            automatic,
             floor_kb = floor() >> 10,
-            "host copies of title textures take the card's memory level by level (VICTORY_LEVELS_ON_DEMAND=1)"
+            "host copies of title textures take the card's memory level by level (automatic on NVIDIA <= 8 GiB; VICTORY_LEVELS_ON_DEMAND overrides)"
         );
         on
     })
+}
+
+fn levels_on_demand_enabled(setting: Option<&str>, automatic: bool) -> bool {
+    setting.map_or(automatic, |value| value == "1")
 }
 
 fn parse_floor(value: Option<&str>) -> u64 {
@@ -737,6 +748,14 @@ mod tests {
     use windows::core::{Interface, s};
 
     use super::*;
+
+    #[test]
+    fn low_vram_default_can_be_overridden() {
+        assert!(levels_on_demand_enabled(None, true));
+        assert!(!levels_on_demand_enabled(None, false));
+        assert!(levels_on_demand_enabled(Some("1"), false));
+        assert!(!levels_on_demand_enabled(Some("0"), true));
+    }
     use crate::host::{compile, transition, warp_adapter};
 
     const SIDE: u32 = 1024;
